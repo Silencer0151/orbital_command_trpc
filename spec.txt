@@ -1,0 +1,644 @@
+# 🛰️ ORBITAL COMMAND: PROTOCOL SPECIFICATION
+# Version: 1.8
+# Date: 2026-03-03
+# Transport: TCP / Plain Text / UTF-8
+# Default Port: 9078
+
+================================================================================
+1. PHILOSOPHY & SYNTAX
+================================================================================
+The protocol is designed for human readability via `netcat`.
+It prioritizes "sci-fi interface" aesthetics over bandwidth efficiency.
+
+- ENDINGS: All commands must end with a standard newline (\n).
+- CASE: Verbs are case-insensitive (UPPERCASE preferred). Arguments preserve case.
+- SEPARATOR: Space (0x20) is the delimiter.
+- PROMPT: The server must indicate readiness with `READY > `.
+- PATHS: Accepts absolute (/foo), dot-relative (./foo), and bare relative (foo)
+         paths. All paths are sandboxed to the server root directory.
+
+================================================================================
+2. SERVER STARTUP FLAGS
+================================================================================
+
+-n <NAME>
+      Set the node name displayed in the connection banner and startup output.
+      Value is forced to uppercase. If omitted, a random name is generated at
+      startup using the format <WORD><DDDD> (e.g. GHOST7341, XRAY0092).
+
+      Word pool: NATO/military phonetic words — ALPHA, BETA, GAMMA, DELTA,
+      ECHO, FOXTROT, GHOST, HUNTER, ION, JADE, KILO, LIMA, NOVA, OSCAR,
+      PAPA, ROMEO, SIERRA, TANGO, VECTOR, XRAY, YANKEE, ZULU.
+
+-c    Enable auth challenge mode. Every new connection must solve a randomly
+      generated puzzle before gaining access to the command loop.
+
+-d <PATH>
+      Set the root (working) directory for the server. All file operations are
+      sandboxed to this directory. Defaults to the current working directory.
+
+Run with -h to print a usage summary of all flags.
+
+Example:
+    ./orbital_command -n VIPER -d /srv/orbital -c
+
+Startup banner (box format, always shown):
+
+    ╔══════════════════════════════════════════╗
+    ║      ORBITAL COMMAND  ::  SYSTEM ONLINE  ║
+    ╠══════════════════════════════════════════╣
+    ║  NODE           : VIPER                  ║
+    ║  PORT           : :9078                  ║
+    ║  ROOT DIR       : /srv/orbital           ║
+    ║  AUTH CHALLENGE : ENABLED                ║
+    ╠══════════════════════════════════════════╣
+    ║  FLAGS:  -n <name>  -d <dir>  -c         ║
+    ║  Run with -h to see all options.         ║
+    ╚══════════════════════════════════════════╝
+
+    AUTH CHALLENGE shows ENABLED or DISABLED regardless of flag usage,
+    so the operator always knows the current security posture at a glance.
+    The -h hint is always printed to guide first-time operators.
+
+================================================================================
+3. CONNECTION LIFECYCLE
+================================================================================
+
+[A] HANDSHAKE
+Upon connection, Server MUST send a banner.
+
+    Server: [UPLINK ESTABLISHED]
+            [SYSTEM ONLINE. AWAITING INPUT.]
+
+[B] AUTH CHALLENGE (if -c flag is active)
+Before entering the command loop, the client must solve a security challenge.
+On failure the server issues a new challenge. The loop repeats until solved
+or the connection is lost.
+
+    Server: ==================================
+              SECURITY CLEARANCE REQUIRED
+            ==================================
+            <CHALLENGE_PROMPT>
+            [ENTER RESULT] >
+    Client: <ANSWER>
+    Server: [HASH VERIFIED]
+            [CLEARANCE GRANTED]
+            [WELCOME, COMMANDER]
+
+    On wrong answer:
+    Server: [HASH MISMATCH: EXPECTED <X>, GOT <Y>]
+            [RECALIBRATING...]
+            <NEW_CHALLENGE_PROMPT>
+            [ENTER RESULT] >
+
+[C] COMMAND LOOP
+After the handshake (and optional auth), the server issues the prompt.
+
+    Server: READY >
+    Client: <COMMAND> [ARGS...]
+    Server: [PROCESSING...] (Optional)
+            <PAYLOAD>
+            <STATUS_SIGNAL>
+            READY >
+
+================================================================================
+4. CORE COMMANDS (FLEET_OPS)
+================================================================================
+
+PING
+    Check connectivity and latency.
+    Response:
+        OK
+        PONG
+        [LATENCY: <1ms]
+        READY
+
+REPORT
+    Return system telemetry (OS, Architecture, Time).
+    Response:
+        OK
+        --------------------------------
+        UNIT STATUS : OPERATIONAL
+        OS          : <OS>
+        ARCH        : <ARCH>
+        TIME        : <RFC1123>
+        --------------------------------
+        READY
+
+TOUCH <PATH>
+    Create an empty file or update timestamps.
+    Response:
+        OK
+        [CREATING TARGET: <PATH>]
+        [FILE SYSTEM ACKNOWLEDGED]
+        READY
+    Error:
+        [ERROR: <REASON>]
+        FAIL
+
+LIST [PATH]
+    List directory contents in a tabular format. Defaults to root directory.
+    Response:
+        OK
+        [SCANNING SECTOR: <PATH>]
+        ---------------------------------------------------
+        TYPE    SIZE        NAME
+        ---------------------------------------------------
+        DIR     4096        .
+        FILE    1024        config.json
+        ---------------------------------------------------
+        [SCAN COMPLETE: 2 OBJECTS]
+        READY
+
+CAT <PATH>
+    Stream file contents with explicit start/end markers and transfer
+    verification. Enhanced with byte count confirmation and checksum.
+
+    Response:
+        OK
+        [OPENING FILE: <PATH>]
+        [SIZE: <BYTES> BYTES]
+        [BEGIN DATA STREAM]
+        <FILE_CONTENT>
+        [END DATA STREAM]
+        [TRANSFER COMPLETE: <BYTES> BYTES | CRC32: <CHECKSUM>]
+        READY
+
+    Error (file not found):
+        [ERROR: FILE NOT FOUND: <PATH>]
+        FAIL
+
+    Error (is directory):
+        [ERROR: TARGET IS A DIRECTORY]
+        FAIL
+
+    Notes:
+        - CRC32 checksum is computed over the raw file bytes and displayed
+          as an uppercase hex string (e.g., CRC32: A1B2C3D4).
+        - Clients can verify integrity by running `crc32 <file>` locally
+          (available via `libarchive-tools` or `python3 -c`).
+        - SIZE in the header and BYTES in the footer MUST match. A mismatch
+          indicates the file was modified mid-transfer.
+
+WRITE <PATH> <CONTENT>
+    Write a SINGLE line of text to a file (Overwrites).
+    Response:
+        OK
+        [TARGET ACQUIRED: <PATH>]
+        [WRITE COMPLETE]
+        READY
+
+WRITEML <PATH> <DELIMITER>
+    Write MULTIPLE lines to a file. Terminates when the client sends
+    <DELIMITER> on a line by itself. Enhanced with transfer receipt.
+
+    Interaction:
+        Client: WRITEML /tmp/log.txt EOF
+        Server: OK
+                [INITIATING WRITE STREAM TO: /tmp/log.txt]
+                [TERMINATOR SET TO: 'EOF']
+                [BEGIN TRANSMISSION...]
+        Client: Line one
+        Client: Line two
+        Client: EOF
+        Server: [EOF RECEIVED]
+                [CAPTURED 2 LINES]
+                [BYTES WRITTEN: <BYTES> | CRC32: <CHECKSUM>]
+                READY
+
+    Error (path escape):
+        [ERROR: ACCESS DENIED: PATH ESCAPES WORKING DIRECTORY]
+        FAIL
+
+    Error (write failure):
+        [ERROR: WRITE FAILED: <REASON>]
+        FAIL
+
+    Notes:
+        - CRC32 is computed over the final written bytes (lines joined
+          with \n). Client can compare against local file to verify.
+        - BYTES WRITTEN reflects the actual on-disk size, not the raw
+          input byte count (delimiter line is excluded).
+        - If the delimiter never arrives (client disconnects), the
+          partial write is discarded and the file is NOT modified.
+          Server logs: [WARN: STREAM INTERRUPTED, WRITE ABORTED]
+
+    Safety (new in v1.6):
+        - Previously, a client disconnect mid-stream could leave a
+          partially written file. The write is now atomic: content is
+          buffered in memory and flushed only after the delimiter is
+          received.
+
+================================================================================
+5. EXTENDED COMMANDS (v1.5)
+================================================================================
+
+CHALLENGE
+    Trigger an on-demand security challenge at any point in a session,
+    regardless of whether the server was started with -c. Useful as a fun
+    interactive puzzle or manual re-authentication.
+
+    Interaction:
+        Client: CHALLENGE
+        Server: ==================================
+                  SECURITY CLEARANCE REQUIRED
+                ==================================
+                <CHALLENGE_PROMPT>
+                [ENTER RESULT] >
+        Client: <ANSWER>
+        Server: [HASH VERIFIED]
+                [CLEARANCE GRANTED]
+                [WELCOME, COMMANDER]
+                READY >
+
+    Challenge types (randomly selected):
+        - BINARY OP  : XOR / AND / OR on two 4-bit operands.
+        - ARITHMETIC : ADD / SUBTRACT / MULTIPLY on two integers.
+        - ASCII SUM  : Sum the ASCII values of a short word (lookup table provided).
+
+BROADCAST <MESSAGE>
+    Send a message to all other currently connected and authenticated clients.
+    The sender receives a delivery report; recipients receive the message
+    prefixed with the sender's address and are re-prompted.
+
+    Sender:
+        Client: BROADCAST all hands on deck
+        Server: OK
+                [BROADCAST SENT TO: 2 NODES]
+                READY >
+
+    Recipients (inline, mid-session):
+        Server:
+                [BROADCAST FROM 192.168.1.5:51234]: all hands on deck
+                READY >
+
+    Notes:
+        - Only authenticated clients are registered as broadcast targets.
+        - Clients in the challenge gate do not appear in the recipient list.
+
+================================================================================
+5b. EXTENDED COMMANDS (v1.6)
+================================================================================
+
+--- ANSI TERMINAL FORMATTING ---
+
+The server uses ANSI escape codes to colorize output for netcat-compatible
+terminals. All decorative ANSI is optional eye candy; the protocol remains
+functional on terminals that strip escapes.
+
+    Color Map:
+        STATUS OK / READY   : Green   (\033[32m)
+        STATUS FAIL / ERROR : Red     (\033[31m)
+        BANNER / HEADERS    : Cyan    (\033[36m)
+        BROADCAST MESSAGES  : Yellow  (\033[33m)
+        PROMPTS / DELIMITERS: Bold    (\033[1m)
+        RESET               : \033[0m (appended after every colored span)
+
+    Implementation Notes:
+        - Every colored write MUST terminate with RESET (\033[0m).
+        - Color wraps full logical lines, not individual words.
+        - The READY prompt becomes: \033[1m\033[32mREADY > \033[0m
+
+--- NICK ---
+
+NICK <CALLSIGN>
+    Set a display name for the current session. Used by BROADCAST, WHISPER,
+    and WHO in place of the raw IP:PORT address.
+
+    Constraints:
+        - CALLSIGN must be 1-16 alphanumeric characters (A-Z, 0-9, _).
+        - Case is preserved.
+        - Must be unique among currently connected clients.
+        - If no NICK is set, the client is identified by IP:PORT.
+
+    Response:
+        OK
+        [CALLSIGN REGISTERED: <CALLSIGN>]
+        READY
+
+    Error (taken):
+        [ERROR: CALLSIGN ALREADY IN USE]
+        FAIL
+
+    Error (invalid):
+        [ERROR: INVALID CALLSIGN (1-16 ALPHANUMERIC/UNDERSCORE)]
+        FAIL
+
+--- WHO ---
+
+WHO
+    List all currently connected and authenticated clients.
+
+    Response:
+        OK
+        [CONNECTED COMMANDERS: <COUNT>]
+        ---------------------------------------------------
+        #   CALLSIGN            ADDRESS           UPTIME
+        ---------------------------------------------------
+        1   VIPER               192.168.1.5:51234  00:12:34
+        2   -                   10.0.0.8:60011     00:03:17
+        ---------------------------------------------------
+        READY
+
+    Notes:
+        - CALLSIGN column shows "-" for clients that have not set a NICK.
+        - UPTIME is the duration since the client connected (HH:MM:SS).
+        - Only authenticated clients appear in the list.
+
+--- WHISPER ---
+
+WHISPER <TARGET> <MESSAGE>
+    Send a private message to a single connected client. TARGET may be a
+    CALLSIGN or an IP:PORT address.
+
+    Sender:
+        Client: WHISPER VIPER check your six
+        Server: OK
+                [WHISPER DELIVERED TO: VIPER]
+                READY >
+
+    Recipient (inline, mid-session):
+        Server:
+                [WHISPER FROM GHOST]: check your six
+                READY >
+
+    Error (target not found):
+        [ERROR: TARGET NOT FOUND: <TARGET>]
+        FAIL
+
+    Error (self):
+        [ERROR: CANNOT WHISPER TO SELF]
+        FAIL
+
+--- APPEND ---
+
+APPEND <PATH> <CONTENT>
+    Append a SINGLE line of text to a file. Creates the file if it does
+    not exist. Does not overwrite existing content.
+
+    Response:
+        OK
+        [TARGET ACQUIRED: <PATH>]
+        [APPEND COMPLETE]
+        READY
+
+    Error:
+        [ERROR: <REASON>]
+        FAIL
+
+    Notes:
+        - A newline (\n) is prepended to CONTENT if the file is non-empty
+          and does not already end with a newline. This prevents the appended
+          line from merging with the last existing line.
+
+--- TREE ---
+
+TREE [PATH] [DEPTH]
+    Recursively list directory contents in a tree format. Defaults to
+    root directory with a max depth of 3.
+
+    Response:
+        OK
+        [SCANNING SECTOR: <PATH>]
+        [MAX DEPTH: <DEPTH>]
+        ---------------------------------------------------
+        .
+        ├── config.json
+        ├── logs/
+        │   ├── access.log
+        │   └── error.log
+        └── data/
+            └── archive/
+                └── old.txt
+        ---------------------------------------------------
+        [SCAN COMPLETE: 6 OBJECTS]
+        READY
+
+    Arguments:
+        PATH  : Directory to scan. Defaults to "." (root).
+        DEPTH : Maximum recursion depth (1-10). Defaults to 3.
+
+    Error:
+        [ERROR: <REASON>]
+        FAIL
+
+--- UPTIME (folded into REPORT) ---
+
+REPORT (v1.6 update)
+    The REPORT command now includes server uptime in the telemetry block.
+    Uptime is measured from server process start.
+
+    Updated Response:
+        OK
+        --------------------------------
+        UNIT STATUS : OPERATIONAL
+        OS          : <OS>
+        ARCH        : <ARCH>
+        TIME        : <RFC1123>
+        UPTIME      : <DDd HHh MMm SSs>
+        --------------------------------
+        READY
+
+    Example UPTIME format:
+        0d 02h 14m 07s
+        12d 06h 00m 33s
+
+--- MOTD ---
+
+The server displays a Message of the Day after the handshake (and auth
+challenge, if active) and before the first READY prompt. The MOTD is
+loaded from a file named `.motd` in the server root directory.
+
+    Behavior:
+        - If `.motd` exists and is non-empty, its contents are displayed
+          inside a decorative frame after the connection banner.
+        - If `.motd` does not exist or is empty, the MOTD phase is skipped
+          silently.
+        - The MOTD file is re-read on every new connection (hot-reloadable).
+        - Editable at runtime via WRITE or WRITEML (by any authenticated
+          client with file access).
+
+    Display format:
+        [MESSAGE OF THE DAY]
+        ========================================
+        <CONTENTS OF .motd>
+        ========================================
+
+    Notes:
+        - Max display size: first 512 bytes of the file. Truncated with
+          "[...TRUNCATED]" if exceeded.
+        - ANSI escape codes inside the .motd file are passed through,
+          allowing colored MOTDs.
+
+================================================================================
+6. STATUS SIGNALS (updated)
+================================================================================
+
+OK      : Operation started successfully.
+FAIL    : Operation failed (generic).
+UNKNOWN : Command not recognized.
+DENIED  : Permission error (e.g. path escapes working directory).
+READY   : Operation ended successfully.
+
+================================================================================
+ANSI TERMINAL FORMATTING (v1.9 Update)
+================================================================================
+
+--- COLOR HELPER FUNCTIONS ---
+
+All color output MUST go through helper functions rather than inline
+concatenation. This prevents reset leaks and centralizes the color map.
+
+    Required helpers:
+
+        colorOK()           → ANSIGreen + "OK" + ANSIReset
+        colorFail()         → ANSIRed + "FAIL" + ANSIReset
+        colorErr(msg)       → ANSIRed + msg + ANSIReset
+        colorHeader(msg)    → ANSICyan + msg + ANSIReset
+        colorSuccess(msg)   → ANSIGreen + msg + ANSIReset
+        colorWarn(msg)      → ANSIYellow + msg + ANSIReset
+        colorBold(msg)      → ANSIBold + msg + ANSIReset
+
+    Rules:
+        - Every helper MUST append ANSIReset at the end. No exceptions.
+        - No handler function may reference ANSI constants directly.
+          All color output flows through these helpers.
+        - The PROMPT constant is rebuilt at startup using the helpers
+          (or the raw empty strings when color is disabled).
+
+--- NO-COLOR FLAG ---
+
+-no-color
+      Disable all ANSI escape codes in server output. Useful when piping
+      netcat output to a file, running on a dumb terminal, or scripting
+      against the server.
+
+    Implementation:
+        - When -no-color is active, all ANSI constants (ANSIReset,
+          ANSIRed, ANSIGreen, ANSIYellow, ANSICyan, ANSIBold) are set
+          to empty strings at startup, before any output is produced.
+        - The helper functions remain the sole color path, so this
+          single switch disables color globally with no per-handler logic.
+        - The startup banner reflects the flag state:
+
+            ║  ANSI COLOR     : DISABLED                ║
+
+          When color is enabled (default), this line is omitted from the
+          banner to keep it clean — color being on is the expected state.
+
+    Startup example:
+        ./orbital_command -no-color -d /srv/orbital
+
+    Notes:
+        - Respects the NO_COLOR environment variable as a fallback
+          (see https://no-color.org). If NO_COLOR is set in the
+          environment, color is disabled even without the flag.
+        - The flag takes precedence: -no-color always disables,
+          regardless of environment.
+
+--- COLORIZED TREE OUTPUT ---
+
+TREE [PATH] [DEPTH]
+    Directory entries and file entries are color-differentiated in the
+    tree output.
+
+    Color rules:
+        - Directory names : Cyan + Bold, with trailing "/"
+        - File names      : Default (no color)
+        - Tree connectors : Default (├── └── │)
+
+    Example (with color):
+        .
+        ├── \033[1m\033[36mlogs/\033[0m
+        │   ├── access.log
+        │   └── error.log
+        └── \033[1m\033[36mdata/\033[0m
+            └── archive.txt
+
+    Notes:
+        - When -no-color is active, directories are still distinguished
+          by the trailing "/" — color is additive, not the sole signal.
+
+--- COLORIZED LIST OUTPUT ---
+
+LIST [PATH]
+    The TYPE column is color-coded to match TREE's visual language.
+
+    Color rules:
+        - "DIR"  in TYPE column : Cyan
+        - "FILE" in TYPE column : Default (no color)
+
+    Example row:
+        \033[36mDIR\033[0m      4096        logs
+        FILE     1024        config.json
+
+--- COLORIZED HELP OUTPUT ---
+
+HELP
+    Command names are highlighted; descriptions use default color.
+    Commands are grouped by category with section headers.
+
+    Response:
+        OK
+        [AVAILABLE COMMANDS]
+        ---------------------------------------------------
+        FLEET OPS
+          \033[36mPING\033[0m                       Check connectivity
+          \033[36mREPORT\033[0m                     System telemetry
+        FILE OPS
+          \033[36mTOUCH\033[0m <PATH>               Create empty file
+          \033[36mLIST\033[0m [PATH]                List directory
+          \033[36mTREE\033[0m [PATH] [DEPTH]        Recursive listing
+          \033[36mCAT\033[0m <PATH>                  Read file
+          \033[36mWRITE\033[0m <PATH> <CONTENT>     Write single line
+          \033[36mWRITEML\033[0m <PATH> <DELIM>     Write multi-line
+          \033[36mAPPEND\033[0m <PATH> <CONTENT>    Append to file
+        COMMS
+          \033[36mNICK\033[0m <CALLSIGN>            Set display name
+          \033[36mWHO\033[0m                         List commanders
+          \033[36mWHISPER\033[0m <TARGET> <MSG>     Private message
+          \033[36mBROADCAST\033[0m <MSG>            Message all
+        OTHER
+          \033[36mCHALLENGE\033[0m                  Security puzzle
+          \033[36mHELP\033[0m                        This listing
+          \033[36mEXIT\033[0m                        Disconnect
+        ---------------------------------------------------
+        READY
+
+    Notes:
+        - Category headers (FLEET OPS, FILE OPS, etc.) are bold.
+        - Command names are cyan (matching the header/delimiter color).
+        - Arguments after the command name are default color.
+        - Descriptions are right-aligned to a fixed column for readability.
+
+--- UPDATED COLOR MAP ---
+
+    Color Map (complete):
+        STATUS OK / READY       : Green   (\033[32m)
+        STATUS FAIL / ERROR     : Red     (\033[31m)
+        BANNER / HEADERS / SEPS : Cyan    (\033[36m)
+        BROADCAST / WHISPER     : Yellow  (\033[33m)
+        PROMPTS                 : Bold + Green (\033[1m\033[32m)
+        COMMAND NAMES (HELP)    : Cyan    (\033[36m)
+        DIRECTORY NAMES         : Bold + Cyan (\033[1m\033[36m)
+        CATEGORY HEADERS (HELP) : Bold    (\033[1m)
+        RESET                   : \033[0m (after every colored span)
+
+--- UPDATED STARTUP FLAGS ---
+
+Server startup flags (complete list for v1.8):
+
+    -n <NAME>       Node name (default: random)
+    -d <PATH>       Root directory (default: cwd)
+    -c              Enable auth challenge
+    -no-color       Disable ANSI color output
+
+    Environment:
+        NO_COLOR        If set, equivalent to -no-color (flag overrides)
+
+================================================================================
+7. FUTURE EXPANSION (v2.0+)
+================================================================================
+- EXEC    (Run arbitrary shell scripts with scoped permissions)
+- LOG     (View recent command history / mission audit log)
+- APPENDML (Multi-line append, mirrors WRITEML semantics)

@@ -1,0 +1,73 @@
+// =============================================================
+// INTEGRATION GUIDE - Changes to main.go
+// =============================================================
+//
+// 1. Add "flag" to your imports
+// 2. Add the auth flag
+// 3. Wire it into handleConnection
+//
+// Below are the specific changes:
+
+// --- STEP 1: Add flag to imports ---
+// In your import block, add:
+//     "flag"
+
+// --- STEP 2: Add the flag variable and parse it ---
+// Replace your current main() opening with:
+
+var authEnabled bool
+
+func main() {
+	flag.BoolVar(&authEnabled, "auth", false, "Enable security challenge on connect")
+	flag.Parse()
+
+	// 1. Start the TCP Listener
+	listener, err := net.Listen("tcp", PORT)
+	// ... rest of main unchanged ...
+}
+
+// --- STEP 3: Add challenge to handleConnection ---
+// After the banner write and before the command loop, add:
+
+func handleConnection(conn net.Conn) {
+	defer conn.Close()
+
+	clientAddr := conn.RemoteAddr().String()
+	fmt.Printf("[NEW LINK] UPLINK ESTABLISHED FROM %s\n", clientAddr)
+
+	// The Handshake
+	banner := "\n" +
+		"=========================================\n" +
+		"      ORBITAL COMMAND - NODE ALPHA       \n" +
+		"=========================================\n" +
+		"[UPLINK ESTABLISHED]\n" +
+		"[SYSTEM ONLINE. AWAITING INPUT.]\n"
+
+	conn.Write([]byte(banner))
+
+	// Create scanner early so auth can use it
+	scanner := bufio.NewScanner(conn)
+
+	// >>> NEW: Auth Challenge <<<
+	if authEnabled {
+		if !RunAuthChallenge(conn, scanner) {
+			fmt.Printf("[%s] AUTH: CONNECTION LOST DURING CHALLENGE\n", clientAddr)
+			return
+		}
+		fmt.Printf("[%s] AUTH: CLEARANCE GRANTED\n", clientAddr)
+	}
+
+	conn.Write([]byte(PROMPT))
+
+	// Command loop continues with the same scanner...
+	for scanner.Scan() {
+		// ... rest unchanged ...
+	}
+}
+
+// =============================================================
+// USAGE:
+//   go run . -auth          # challenge enabled
+//   go run .                # no challenge (default)
+//   go build -o orbital-command.exe . && ./orbital-command.exe -auth
+// =============================================================
