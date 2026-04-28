@@ -1,4 +1,4 @@
-./testdir/
-./INTEGRATION.go.txt
-./overwrite.txt
+testdir/
+INTEGRATION.go.txt
+overwrite.txt
 *.exe
